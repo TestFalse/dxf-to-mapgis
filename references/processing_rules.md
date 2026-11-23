@@ -73,6 +73,14 @@ MTEXT 的 `attachment_point`（1左上/2上中/3右上/4左中/5正中/6右中/7
 - 坑：`ArcEdge.center` / `LineEdge.start_point` 是 **Vec2**，没有 `.z`，须用 `getattr(v,'z',0.0)` 兜底，否则 add_circle 抛异常被吞、圆丢失。
 - 圆圈变虚线：explode 后实体线型常为 `None`（ByLayer 未展开写不出），Section 读不到就按默认渲染成虚线。清理循环里给 LINE/ARC/CIRCLE/POINT 显式写 `CONTINUOUS`（已是虚线 421302 的保持不动）。
 
+### 10. 飞线（与主体不同版面）
+源图部分块 INSERT 用负缩放 `xscale=-2`（镜像），ezdxf `explode()` 有 bug：把圆心 x 从 `+549271` 错算成 `-549271`（直接对 insert.x 取负、漏平移），圆飞到负坐标、与主体分离。
+处理：explode 前若 `xscale<0`，临时改为 `abs(xscale)` 再 explode，之后对子实体施加 `x' = 2*insert.x - x` 镜像（CIRCLE/ARC center、POINT location、LINE 两端、TEXT insert、HATCH edge.center）。勿用 `Matrix44.chain`（顺序易错，直接改坐标值）。
+
+### 11. 区文件（MapGIS .wp）
+R12/AC1009 规格不含 HATCH 实体 → Section 从 R12 DXF 读不到填充 → 无区文件。Section 自带示例 `dxf2004.dxf` 为 AC1018，支持 HATCH→区。
+处理：`--dxf-version R2004` 输出 AC1018 并保留 HATCH（`keep_hatch=True`，explode 时跳过 HATCH 拆解、KEEP 集合加入 HATCH），供 Section 生成区文件。可与 R12 版本分别输出到两个目录，点/线用 R12、区用 R2004。
+
 ## 关键坑速查
 - 新文档必须 `doc.encoding='gbk'`（只设 header 的 `$DWGCODEPAGE` 无效），否则中文乱码。
 - `add_text` 无 `location/insert` 参数，用 `te.set_placement()`。
