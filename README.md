@@ -37,6 +37,7 @@ python scripts/dxf_prep_for_mapgis.py --src "<源DXF目录>" --out "<输出目�
 | `--src` | 必填，含源 `.dxf` 的目录 |
 | `--out` | 可选，默认 `<src>/MapGIS转换用` |
 | `--dash-name` | 可选，虚线改名用的线型名，默认 `421302`（须为 Section `cad_map.lin` 中映射到 MapGIS 虚线代号 2 的名字） |
+| `--dxf-version` | 可选，`R12`（默认 AC1009，点/线转换最佳）或 `R2004`（AC1018，保留 HATCH 供 Section 生成区文件 .wp）。两者分别输出到不同目录即可同时得到点/线和区。 |
 
 脚本会打印每个文件的处理统计，并在输出目录生成 `_处理报告.txt`。原文件不会被修改。
 
