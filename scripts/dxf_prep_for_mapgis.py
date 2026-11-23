@@ -16,11 +16,11 @@ v2 改进（相对 v1）：
 
 保留原文件，输出到「MapGIS转换用」子目录。
 """
-import os, re, logging
+import os, re, logging, argparse
 from collections import Counter
 import ezdxf
 from ezdxf.addons import Importer
-from ezdxf.math import Vec3
+from ezdxf.math import Vec3, Matrix44
 
 logging.getLogger("ezdxf").setLevel(logging.ERROR)
 
@@ -221,8 +221,9 @@ def hatch_to_lines(msp, e):
     msp.delete_entity(e)
 
 
-def explode_all_keep_layer(msp, max_rounds=30):
-    """多轮爆破，INSERT 子实体继承父图层；返回新增 TEXT 行数"""
+def explode_all_keep_layer(msp, max_rounds=30, keep_hatch=False):
+    """多轮爆破，INSERT 子实体继承父图层；返回新增 TEXT 行数。
+    keep_hatch=True 时保留 HATCH 实体（R2004 供 Section 生成区文件）。"""
     n_text = 0
     for _ in range(max_rounds):
         changed = False
@@ -238,15 +239,54 @@ def explode_all_keep_layer(msp, max_rounds=30):
                 spline_to_lines(msp, e)
                 changed = True
             elif t == "HATCH":
+                if keep_hatch:
+                    # R2004 保留 HATCH，Section 才能生成区文件；只继承父图层
+                    continue
                 hatch_to_lines(msp, e)
                 changed = True
             elif t in EXPLODE_TYPES:
                 parent_layer = e.dxf.get("layer", "0")
                 is_dim = t in ("DIMENSION", "ARC_DIMENSION")
                 try:
+                    # ezdxf explode() 对负缩放(xscale<0)的 INSERT 有 bug：圆心 x 被
+                    # 错算成 -insert.x（飞到负坐标，与主体不同版面）。临时改为正缩放
+                    # 再 explode，之后对所有子实体施加 x 镜像修正回正确位置。
+                    mirror_x = False
+                    ins_x = 0.0
+                    if t == "INSERT":
+                        xs = e.dxf.get("xscale", 1.0)
+                        if xs is not None and xs < 0:
+                            mirror_x = True
+                            ins_x = e.dxf.insert.x
+                            e.dxf.xscale = abs(xs)
                     subs = e.explode()
                     # ezdxf 的 explode 已自动应用父 INSERT 的旋转/缩放/插入点，
                     # 不要再手动叠加，否则旋转会翻倍。
+                    if mirror_x:
+                        # 关于 x=ins_x 镜像：x' = 2*ins_x - x（把负坐标翻回图幅）
+                        # 不用 Matrix44.chain（易顺序错），直接改关键点坐标。
+                        def mir(v):
+                            return Vec3(2 * ins_x - v.x, v.y, getattr(v, "z", 0.0))
+                        for s in subs:
+                            st = s.dxftype()
+                            try:
+                                if st in ("CIRCLE", "ARC"):
+                                    s.dxf.center = mir(Vec3(s.dxf.center))
+                                elif st == "POINT":
+                                    s.dxf.location = mir(Vec3(s.dxf.location))
+                                elif st == "LINE":
+                                    s.dxf.start = mir(Vec3(s.dxf.start))
+                                    s.dxf.end = mir(Vec3(s.dxf.end))
+                                elif st in ("TEXT", "MTEXT", "ATTDEF"):
+                                    s.dxf.insert = mir(Vec3(s.dxf.insert))
+                                elif st == "HATCH":
+                                    for path in s.paths:
+                                        for ed in getattr(path, "edges", []) or []:
+                                            if hasattr(ed, "center"):
+                                                c = ed.center
+                                                c.x = 2 * ins_x - c.x
+                            except Exception:
+                                pass
                     for s in subs:
                         # 尺寸标注爆破会带出 Defpoints 图层的 POINT（标注定义点），
                         # MapGIS 会把 POINT 渲染成实心圆点，导致标注端点多出绿点——丢弃。
@@ -399,16 +439,16 @@ def explicit_linetype(msp, doc):
     return n
 
 
-def process_file(src_path, dst_path):
+def process_file(src_path, dst_path, version="R12", keep_hatch=False):
     src = ezdxf.readfile(src_path)
-    doc = ezdxf.new("R12", setup=True)   # R12 / AC1009
+    doc = ezdxf.new(version, setup=True)   # R12=AC1009 / R2004=AC1018
     doc.encoding = "gbk"
     imp = Importer(src, doc)
     imp.import_modelspace()
     imp.finalize()
     msp = doc.modelspace()
 
-    n_text = explode_all_keep_layer(msp)
+    n_text = explode_all_keep_layer(msp, keep_hatch=keep_hatch)
     n_uu = merge_overline_fractions(msp)
     n_lt = explicit_linetype(msp, doc)   # 虚线 -> Section 对照表可识别的 421302（不改几何）
     if n_lt and SECTION_DASH_NAME not in doc.linetypes:
@@ -428,8 +468,9 @@ def process_file(src_path, dst_path):
         except Exception:
             pass
 
+    keep_types = KEEP | ({"HATCH"} if keep_hatch else set())
     for e in list(msp):
-        if e.dxftype() not in KEEP:
+        if e.dxftype() not in keep_types:
             msp.delete_entity(e)
         else:
             fix_color_weight(e)   # 全量兜底：所有基础图元 BYBLOCK -> BYLAYER
@@ -463,14 +504,32 @@ def process_file(src_path, dst_path):
 
 
 def main():
+    global SRC_DIR, OUT_DIR
+    ap = argparse.ArgumentParser(description="DXF 预处理 -> 供 Section 转 MapGIS")
+    ap.add_argument("--src", default=SRC_DIR, help="源 DXF 目录")
+    ap.add_argument("--out", default=None, help="输出目录（默认 <src>/MapGIS转换用）")
+    ap.add_argument("--dxf-version", default="R12", choices=["R12", "R2004"],
+                    help="输出版本：R12(AC1009，默认，线/点转换最佳) 或 R2004(AC1018，保留 HATCH 供生成区文件)")
+    ap.add_argument("--dash-name", default="421302", help="虚线改名用的线型名")
+    args = ap.parse_args()
+    SRC_DIR = os.path.abspath(args.src)
+    OUT_DIR = os.path.abspath(args.out or os.path.join(SRC_DIR, "MapGIS转换用"))
+    global SECTION_DASH_NAME
+    SECTION_DASH_NAME = args.dash_name
+    version = args.dxf_version
+    keep_hatch = (version == "R2004")
+
     os.makedirs(OUT_DIR, exist_ok=True)
     files = sorted(f for f in os.listdir(SRC_DIR)
-                   if f.lower().endswith(".dxf") and "MapGIS" not in f)
+                   if f.lower().endswith(".dxf") and
+                   os.path.abspath(os.path.join(SRC_DIR, f)) != OUT_DIR)
     report = []
     for f in files:
         try:
             report.append((f,) + process_file(os.path.join(SRC_DIR, f),
-                                              os.path.join(OUT_DIR, f)) + ("OK",))
+                                              os.path.join(OUT_DIR, f),
+                                              version=version,
+                                              keep_hatch=keep_hatch) + ("OK",))
         except Exception as ex:
             report.append((f, 0, 0, {}, 0, 0, 0, 0, "ERR:" + repr(ex)))
     print("文件 | 原始→输出 | 分式 | 文本行 | 划线合并 | layer0 | 结果")
