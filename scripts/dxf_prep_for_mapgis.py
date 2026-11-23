@@ -1,28 +1,31 @@
 # -*- coding: utf-8 -*-
 """
-DXF 预处理 -> 供 Section 完美转换为 MapGIS。
+DXF 预处理 -> 供 Section 完美转换为 MapGIS  (v2)
 
-命令行用法：
-  python dxf_prep_for_mapgis.py --src <源目录> [--out <输出目录>] [--dash-name 421302]
-  --src   必填，含若干 .dxf 的目录（会跳过输出目录里的文件）。
-  --out   可选，默认 <源目录>/MapGIS转换用。
-  --dash-name 可选，虚线实体改名用的线型名，必须是 Section cad_map.lin 中
-          映射到 MapGIS 虚线(代号2)的名字，默认 421302。
+v2 改进（相对 v1）：
+  - 保留图层：INSERT explode 时块内 layer "0" 继承父 INSERT 图层；其余图层原样保留。
+  - 保留旋转：TEXT 旋转原样保留；MTEXT 多行按原文字方向排布。
+  - 划线分式：%%u上(下划线配下方) / %%o下(上划线配上方) -> MapGIS 分式 /上/下/，
+    消除 MapGIS 中显示的 "%/u / %/o" 字面量并恢复“文字在横线上下”。
+  - 输出 R12 (AC1009)：兼容性更好，转换效果更佳。
+  - 全部复合实体爆破为 LINE/ARC/CIRCLE/TEXT/POINT，Section 不丢要素。
+  - MTEXT 堆叠 \\S上/下; -> /上/下/。
+  - 虚线保留：Section 靠线型名查 cad_map.lin（CAD名->MapGIS线型号），原图的
+    HIDDEN2/ACAD_ISO02W100 等及随层虚线查不到映射会变实线。这里不改几何，
+    只把虚线实体线型名统一改为对照表已有的 421302（->MapGIS 线型2 虚线）。
 
-处理内容：递归爆破复合实体为 LINE/ARC/CIRCLE/TEXT/POINT；保留图层/旋转；
-MTEXT \\S上/下; 与 %%u/%%o 划线码 -> MapGIS 分式 /上/下/；\\U+XXXX 解码中文；
-DIMENSION 方向/颜色修正；标注定义点 POINT 丢弃；输出 R12(AC1009)+GBK；
-虚线实体线型名统一改为对照表可识别的虚线名（不改几何）。
-
-保留原文件，原样输出到目标目录。
+保留原文件，输出到「MapGIS转换用」子目录。
 """
-import os, re, logging, argparse
+import os, re, logging
 from collections import Counter
 import ezdxf
 from ezdxf.addons import Importer
 from ezdxf.math import Vec3
 
 logging.getLogger("ezdxf").setLevel(logging.ERROR)
+
+SRC_DIR = r"C:\Users\TC\Desktop\铜山岭资料更新\爆破"
+OUT_DIR = os.path.join(SRC_DIR, "MapGIS转换用")
 
 STACK_RE = re.compile(r"\\S([^;]*?)/([^;]*?);")
 FRAC_RE = re.compile(r"/[^/]+/[^/]+/")
@@ -159,20 +162,62 @@ def spline_to_lines(msp, e):
 
 
 def hatch_to_lines(msp, e):
+    """HATCH -> 边界图元。关键：实心填充圆(EdgePath/ArcEdge)必须还原为
+    闭合 CIRCLE，Section 才能造区填充；否则见矿/未见矿钻孔都只剩同心圆，
+    实心/空心无法区分。"""
     layer = e.dxf.layer
+    color = e.dxf.get("color", 256)
+    # 实心 HATCH(SOLID) 的闭合边界放到独立图层，供 Section 造区填充 ->
+    # 区分「见矿(实心)」与「未见矿(空心)」钻孔；两者原有同心圆完全相同。
+    try:
+        solid_fill = int(e.dxf.get("solid_fill", 0))
+    except Exception:
+        solid_fill = 0
+    fill_layer = "见矿实心区" if (solid_fill and
+                              str(e.dxf.get("pattern_name", "")).upper() == "SOLID") else layer
     for path in e.paths:
-        if hasattr(path, "vertices") and path.vertices is not None:
-            vs = list(path.vertices)
-            for a, b in zip(vs, vs[1:]):
-                ln = msp.add_line((a[0], a[1]), (b[0], b[1]))
-                ln.dxf.layer = layer
-        elif hasattr(path, "edges"):
-            for edge in path.edges:
+        # EdgePath: 圆弧/直线边界（实心圆多为 ArcEdge 0->360）
+        edges = getattr(path, "edges", None)
+        if edges:
+            for edge in edges:
+                et = type(edge).__name__
                 try:
-                    for sub in edge.virtual_entities():
-                        msp.add_entity(sub)
+                    if et == "ArcEdge":
+                        c = edge.center
+                        cz = getattr(c, "z", 0.0)  # ArcEdge.center 是 Vec2，无 z
+                        a0, a1 = edge.start_angle, edge.end_angle
+                        if abs((a1 - a0) % 360.0) < 1e-6:
+                            cire = msp.add_circle((c.x, c.y, cz), edge.radius)
+                            cire.dxf.layer = fill_layer
+                            cire.dxf.color = color
+                        else:
+                            arc = msp.add_arc((c.x, c.y, cz), edge.radius, a0, a1)
+                            arc.dxf.layer = fill_layer
+                            arc.dxf.color = color
+                    elif et == "LineEdge":
+                        s, t = edge.start_point, edge.end_point
+                        ln = msp.add_line((s.x, s.y, getattr(s, "z", 0.0)),
+                                          (t.x, t.y, getattr(t, "z", 0.0)))
+                        ln.dxf.layer = fill_layer
+                        ln.dxf.color = color
+                    else:
+                        # 其他边（Spline/Ellipse）尝试通用接口
+                        subs = getattr(edge, "virtual_entities", None)
+                        if callable(subs):
+                            for sub in subs():
+                                sub.dxf.layer = fill_layer
+                                msp.add_entity(sub)
                 except Exception:
                     pass
+            continue
+        # PolylinePath / 顶点路径
+        vs = getattr(path, "vertices", None)
+        if vs is not None:
+            vs = list(vs)
+            for a, b in zip(vs, vs[1:]):
+                ln = msp.add_line((a[0], a[1]), (b[0], b[1]))
+                ln.dxf.layer = fill_layer
+                ln.dxf.color = color
     msp.delete_entity(e)
 
 
@@ -249,7 +294,7 @@ def merge_overline_fractions(msp, tol_x=3.0, dy_min=1.0, dy_max=8.0):
             # 跳过空文字（控制点空属性 explode 出空 TEXT，会抢占配对）
             if not ttxt:
                 continue
-            # 跳过已成型分式（如 /编号/数值/，避免把两个分式串成一个）
+            # 跳过已成型分式（如 /5ca1/316.140/，避免把两个分式串成一个）
             if FRAC_RE.search(ttxt):
                 continue
             if exclude_re.search(t.dxf.text):
@@ -305,7 +350,7 @@ def merge_overline_fractions(msp, tol_x=3.0, dy_min=1.0, dy_max=8.0):
 # Section 的线型对照表 cad_map.lin 中：421302 -> MapGIS 线型 2（虚线），
 # CONTINUOUS -> 1（实线）。把 DXF 中的虚线统一改成对照表已有的名字，
 # Section 即可直接映射为虚线，无需用户改动任何系统配置、也不改任何几何。
-SECTION_DASH_NAME = "421302"   # 由 main() 的 --dash-name 覆盖
+SECTION_DASH_NAME = "421302"
 
 
 def explicit_linetype(msp, doc):
@@ -388,6 +433,16 @@ def process_file(src_path, dst_path):
             msp.delete_entity(e)
         else:
             fix_color_weight(e)   # 全量兜底：所有基础图元 BYBLOCK -> BYLAYER
+            # 显式写线型：explode 后线型常为 None(ByLayer 未展开)，Section 读取时
+            # 会按默认渲染，钻孔圆圈被误显示成虚线。实线统一写 CONTINUOUS；
+            # 虚线(421302)保持不动。
+            if e.dxftype() in ("LINE", "ARC", "CIRCLE", "POINT"):
+                try:
+                    lt = e.dxf.get("linetype", None)
+                    if lt is None or str(lt).upper() in ("BYLAYER", "BYBLOCK"):
+                        e.dxf.linetype = "CONTINUOUS"
+                except Exception:
+                    pass
 
     # 旋转规范化到 [0,360)：避免 -50 这类负值在 MapGIS 中方向异常
     for e in msp:
@@ -408,25 +463,14 @@ def process_file(src_path, dst_path):
 
 
 def main():
-    global SECTION_DASH_NAME
-    ap = argparse.ArgumentParser(description="DXF 预处理 -> 供 Section 转 MapGIS")
-    ap.add_argument("--src", required=True, help="源 DXF 所在目录")
-    ap.add_argument("--out", default=None, help="输出目录，默认 <源目录>/MapGIS转换用")
-    ap.add_argument("--dash-name", default="421302",
-                    help="虚线改名用线型名（须为 cad_map.lin 中映射到 MapGIS 虚线2 的名字）")
-    args = ap.parse_args()
-    SECTION_DASH_NAME = args.dash_name
-
-    src_dir = os.path.abspath(args.src)
-    out_dir = os.path.abspath(args.out or os.path.join(src_dir, "MapGIS转换用"))
-    os.makedirs(out_dir, exist_ok=True)
-    files = sorted(f for f in os.listdir(src_dir)
-                   if f.lower().endswith(".dxf") and os.path.abspath(os.path.join(src_dir, f)) != out_dir)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    files = sorted(f for f in os.listdir(SRC_DIR)
+                   if f.lower().endswith(".dxf") and "MapGIS" not in f)
     report = []
     for f in files:
         try:
-            report.append((f,) + process_file(os.path.join(src_dir, f),
-                                              os.path.join(out_dir, f)) + ("OK",))
+            report.append((f,) + process_file(os.path.join(SRC_DIR, f),
+                                              os.path.join(OUT_DIR, f)) + ("OK",))
         except Exception as ex:
             report.append((f, 0, 0, {}, 0, 0, 0, 0, "ERR:" + repr(ex)))
     print("文件 | 原始→输出 | 分式 | 文本行 | 划线合并 | layer0 | 结果")
@@ -434,12 +478,11 @@ def main():
         f, a, b, cnt, frac, ntext, nuu, l0, st = r
         print(f"\n{f}\n  {a}→{b} | 分式={frac} | 文本行={ntext} | 划线合并={nuu} | layer0={l0} | {st}")
         print("  图元:", dict(sorted(cnt.items(), key=lambda x: -x[1])))
-    with open(os.path.join(out_dir, "_处理报告.txt"), "w", encoding="utf-8") as fh:
-        fh.write("DXF 预处理报告（爆破 + 分式 + 图层/旋转保留 + R12 + 虚线）\n\n")
+    with open(os.path.join(OUT_DIR, "_处理报告.txt"), "w", encoding="utf-8") as fh:
+        fh.write("DXF 预处理报告 v2（爆破 + 分式 + 图层/旋转保留 + R12）\n\n")
         for r in report:
             f, a, b, cnt, frac, ntext, nuu, l0, st = r
             fh.write(f"{f}\n  原始 {a} → 输出 {b} | 分式 {frac} | 文本行 {ntext} | 划线合并 {nuu} | layer0 {l0} | {st}\n  图元 {cnt}\n\n")
-    print(f"\n输出目录: {out_dir}")
 
 
 if __name__ == "__main__":
