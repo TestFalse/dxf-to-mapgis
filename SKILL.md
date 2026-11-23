@@ -28,11 +28,12 @@ Section **does not parse DXF linetype patterns**. It reads each entity's linetyp
 ### Step 2 — Run the preprocessing script
 
 ```bash
-python scripts/dxf_prep_for_mapgis.py --src "<源DXF目录>" [--out "<输出目录>"] [--dash-name 421302]
+python scripts/dxf_prep_for_mapgis.py --src "<源DXF目录>" [--out "<输出目录>"] [--dash-name 421302] [--dxf-version R12|R2004]
 ```
 
 - `--src` (required): directory containing source `.dxf` files.
 - `--out` (optional): defaults to `<src>/MapGIS转换用`.
+- `--dxf-version` (optional): `R12` (default, AC1009) — best for point/line conversion; `R2004` (AC1018) — keeps HATCH entities so Section can generate MapGIS region (.wp) files. Run twice to two output dirs if you need both point/line and region output.
 - Requires `ezdxf` (`pip install ezdxf`; if blocked, use `-i https://pypi.tuna.tsinghua.edu.cn/simple`).
 - The script prints per-file stats and writes `_处理报告.txt` to the output directory.
 
