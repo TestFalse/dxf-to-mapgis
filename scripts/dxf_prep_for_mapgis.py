@@ -485,21 +485,8 @@ def process_file(src_path, dst_path, version="R12", keep_hatch=False):
                 except Exception:
                     pass
 
-    # R2004 模式保留 HATCH 供 Section 生成区文件，但源图的 lineweight
-    # (0.09~0.5mm) 会让 Section 按线宽渲染、线明显变粗；R12 规格不支持
-    # 线宽所以一直是默认细线。为保持与 R12 一致的细线视觉，清除实体与
-    # 图层的 lineweight（HATCH 几何/填充不受影响）。
-    if keep_hatch:
-        for e in msp:
-            try:
-                e.dxf.discard("lineweight")
-            except Exception:
-                pass
-        for ly in doc.layers:
-            try:
-                ly.dxf.discard("lineweight")
-            except Exception:
-                pass
+    # R2004 模式保留源图 lineweight（用户选择保留线粗细），仅 R12 因
+    # 规格不支持线宽而自动丢失。HATCH 保留供 Section 生成区文件。
 
     # 旋转规范化到 [0,360)：避免 -50 这类负值在 MapGIS 中方向异常
     for e in msp:
