@@ -81,9 +81,9 @@ MTEXT 的 `attachment_point`（1左上/2上中/3右上/4左中/5正中/6右中/7
 R12/AC1009 规格不含 HATCH 实体 → Section 从 R12 DXF 读不到填充 → 无区文件。Section 自带示例 `dxf2004.dxf` 为 AC1018，支持 HATCH→区。
 处理：`--dxf-version R2004` 输出 AC1018 并保留 HATCH（`keep_hatch=True`，explode 时跳过 HATCH 拆解、KEEP 集合加入 HATCH），供 Section 生成区文件。可与 R12 版本分别输出到两个目录，点/线用 R12、区用 R2004。
 
-### 12. R2004 版本线变粗
-R2004 输出会保留源图的 `lineweight`（LINE 0.3/0.5mm、POINT 0.3mm 等）及图层线宽，Section 按线宽渲染 → 线明显变粗；R12/AC1009 规格不支持线宽、一直是默认细线，所以「之前用 R12 正常」。
-处理：`--dxf-version R2004` 模式在保存前对所有实体与图层 `dxf.discard("lineweight")`，HATCH 几何/填充不受影响 → 线宽回到 R12 一致的细线，同时保留 HATCH 供生成区。注意 `ezdxf` 无 `del_lineweight()`，用 `e.dxf.discard("lineweight")`。
+### 12. R2004 版本线宽（保留）
+R2004 输出会保留源图的 `lineweight`（LINE 0.3/0.5mm、POINT 0.3mm 等）及图层线宽，Section 按线宽渲染 → 线比 R12 粗；R12/AC1009 规格不支持线宽、一律默认细线。
+这是**预期行为、不清除**：用户选择在 R2004 版本保留源图线粗细（区文件需要 R2004，线宽随之保留）。若确实要细线，改用 R12 版本输出（点/线用），或手动清除线宽。勿默认 `dxf.discard("lineweight")`。
 
 ## 关键坑速查
 - 新文档必须 `doc.encoding='gbk'`（只设 header 的 `$DWGCODEPAGE` 无效），否则中文乱码。
