@@ -66,6 +66,13 @@ MTEXT 的 `attachment_point`（1左上/2上中/3右上/4左中/5正中/6右中/7
 `mtext_to_text()`：水平组 `(attach-1)%3`、垂直组 `(attach-1)//3` 还原对齐；行距 hp*1.0。
 **R12 不持久化 group 72/73**：`set_placement(align=)` 与直接设 `dxf.halign` 都无效 → 右/居中对齐用字宽估算（`_text_width_est`：中文/全角≈1.0h，ASCII≈0.6h）做几何补偿 `x = insert.x - width`。
 
+### 9. 实心/空心钻孔区分 + 圆圈变虚线
+见矿/未见矿钻孔块各自只有两个同心 CIRCLE（半径1、2），**唯一差别是见矿块多一个 SOLID 填充 HATCH（`solid_fill=1`，ArcEdge 0→360 整圆，与内圆重合）**。原脚本 `hatch_to_lines()` 只处理有 `vertices` 的路径，ArcEdge 没有 `virtual_entities()` → 异常被吞，填充圆完全丢失 → MapGIS 里两者都是空心双圆，分不出。
+处理：
+- `hatch_to_lines()` 支持 EdgePath：`ArcEdge` 整圆(0→360) 生成闭合 CIRCLE，非整圆生成 ARC，`LineEdge` 生成 LINE。**实心 HATCH 的边界圆放到独立图层 `见矿实心区`**，未见矿钻孔无此层圆 → Section 里按该图层造区填充即得实心，一眼区分（用户选「保留区文件填充」方案）。
+- 坑：`ArcEdge.center` / `LineEdge.start_point` 是 **Vec2**，没有 `.z`，须用 `getattr(v,'z',0.0)` 兜底，否则 add_circle 抛异常被吞、圆丢失。
+- 圆圈变虚线：explode 后实体线型常为 `None`（ByLayer 未展开写不出），Section 读不到就按默认渲染成虚线。清理循环里给 LINE/ARC/CIRCLE/POINT 显式写 `CONTINUOUS`（已是虚线 421302 的保持不动）。
+
 ## 关键坑速查
 - 新文档必须 `doc.encoding='gbk'`（只设 header 的 `$DWGCODEPAGE` 无效），否则中文乱码。
 - `add_text` 无 `location/insert` 参数，用 `te.set_placement()`。
