@@ -32,6 +32,8 @@ FRAC_RE = re.compile(r"/[^/]+/[^/]+/")
 UU_RE = re.compile(r"%%[uU]")   # 下划线（上排文字，配下方）
 OO_RE = re.compile(r"%%[oO]")   # 上划线（下排文字，配上方）——钻孔样品标注横线
 UNI_RE = re.compile(r"\\[uU]\+([0-9A-Fa-f]{4,6})")   # AutoCAD \U+XXXX Unicode 转义（中文）
+# 罗马数字：Section/MapGIS 把 GBK 编码的 Ⅱ 误渲染成两个 Ⅰ，改写成 \U+XXXX 转义
+ROMAN_MAP = {c: f"\\U+{ord(c):04X}" for c in "ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ"}
 
 EXPLODE_TYPES = {
     "INSERT", "DIMENSION", "ARC_DIMENSION", "LWPOLYLINE", "POLYLINE",
@@ -58,6 +60,9 @@ def clean_format(text):
     s = re.sub(r"%%[dD]", "°", s)
     s = re.sub(r"%%[pP]", "±", s)
     # 注意：%%u/%%o 划线码不能在此删除，须留给 merge_overline_fractions 配对成 /上/下/
+    # 罗马数字 -> \U+XXXX 转义：Section 按 GBK 解码 Ⅱ 会拆成两个 Ⅰ，转义可正确识别
+    for ch, esc in ROMAN_MAP.items():
+        s = s.replace(ch, esc)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -393,6 +398,9 @@ def merge_overline_fractions(msp, tol_x=3.0, dy_min=1.0, dy_max=8.0):
 SECTION_DASH_NAME = "421302"
 
 
+SOLID_LAYER_KEYS = ("采场", "巷道")   # 这些图层的虚线在 MapGIS 中间距变大像断线，改实线
+
+
 def explicit_linetype(msp, doc):
     """把所有虚线几何实体的线型统一改为 Section 对照表可识别的虚线名。
 
@@ -432,7 +440,12 @@ def explicit_linetype(msp, doc):
             lt = layer_lt.get(lay, "CONTINUOUS")
         if is_dash(lt):
             try:
-                e.dxf.linetype = SECTION_DASH_NAME
+                lay = e.dxf.get("layer", "0") or ""
+                # 采场/巷道图层：Section 虚线2 间距过大看着像断线，改实线
+                if any(k in lay for k in SOLID_LAYER_KEYS):
+                    e.dxf.linetype = "CONTINUOUS"
+                else:
+                    e.dxf.linetype = SECTION_DASH_NAME
                 n += 1
             except Exception:
                 pass
