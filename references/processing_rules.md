@@ -85,6 +85,10 @@ R12/AC1009 规格不含 HATCH 实体 → Section 从 R12 DXF 读不到填充 →
 R2004 输出会保留源图的 `lineweight`（LINE 0.3/0.5mm、POINT 0.3mm 等）及图层线宽，Section 按线宽渲染 → 线比 R12 粗；R12/AC1009 规格不支持线宽、一律默认细线。
 这是**预期行为、不清除**：用户选择在 R2004 版本保留源图线粗细（区文件需要 R2004，线宽随之保留）。若确实要细线，改用 R12 版本输出（点/线用），或手动清除线宽。勿默认 `dxf.discard("lineweight")`。
 
+### 13. 采场/巷道"断线" + 罗马数字Ⅱ变ⅠⅠ
+- 断线：源图「采场/巷道」图层线型是 ACAD_ISO02W100/HIDDEN2（虚线），Section 映射成 MapGIS 虚线2 后间距变大、看着像断线。用户选「只改采场线」：`explicit_linetype` 中图层名含 `采场`/`巷道`（`SOLID_LAYER_KEYS`）的虚线改 `CONTINUOUS`，其余虚线（设计中心线、采矿权界等）保持 421302 不动。
+- 罗马数字：源 MTEXT 含 `\S0-Ⅱ-5-2-3/...`、`\SⅡ1-18/...`（Ⅱ=U+2161）。DXF 按 GBK 存正确，但 Section 把 Ⅱ 误渲染成两个 Ⅰ。用户选「转义写法」：`clean_format` 末尾把罗马数字 Ⅰ-Ⅻ 改写为 `\U+XXXX`（如 Ⅱ→`\U+2161`），Section 可正确识别。**注意**：`UNI_RE` 的解码在前面执行，转义放在末尾不会被再次解码。
+
 ## 关键坑速查
 - 新文档必须 `doc.encoding='gbk'`（只设 header 的 `$DWGCODEPAGE` 无效），否则中文乱码。
 - `add_text` 无 `location/insert` 参数，用 `te.set_placement()`。
