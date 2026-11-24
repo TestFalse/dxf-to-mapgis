@@ -37,15 +37,19 @@ UNI_RE = re.compile(r"\\[uU]\+([0-9A-Fa-f]{4,6})")   # AutoCAD \U+XXXX Unicode �
 ROMAN_MAP = dict(zip("ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ",
                      ["I","II","III","IV","V","VI","VII","VIII","IX","X","XI","XII"]))
 
+# 注意：LWPOLYLINE/POLYLINE 不 explode！源图采场/巷道大量多段线，拆成 LINE
+# 段后 Section 渲染成断续短线（用户实测：原文件多段线直转连续正常）。
+# 多段线是 Section 原生支持实体，保留即可保持连续。
 EXPLODE_TYPES = {
-    "INSERT", "DIMENSION", "ARC_DIMENSION", "LWPOLYLINE", "POLYLINE",
+    "INSERT", "DIMENSION", "ARC_DIMENSION",
     "MULTILEADER", "LEADER", "MTEXT", "SPLINE", "HATCH",
 }
 DROP_TYPES = {
     "VIEWPORT", "OLE2FRAME", "IMAGE", "WIPEOUT", "TABLESTYLE",
     "VERTEX", "SEQEND", "ATTRIB", "ATTDEF",
 }
-KEEP = {"LINE", "ARC", "CIRCLE", "TEXT", "POINT", "SOLID", "3DFACE", "TRACE"}
+KEEP = {"LINE", "ARC", "CIRCLE", "TEXT", "POINT", "SOLID", "3DFACE", "TRACE",
+        "LWPOLYLINE", "POLYLINE"}   # 多段线保留：Section 原生支持，explode 才会断线
 
 
 def clean_format(text):
@@ -520,6 +524,29 @@ def process_file(src_path, dst_path, version="R12", keep_hatch=False):
                     e.dxf.rotation = r % 360
             except Exception:
                 pass
+
+    # R12(AC1009) 规格不支持 LWPOLYLINE，ezdxf 保存时会丢弃。
+    # 保存前把 LWPOLYLINE 转成 R12 原生 POLYLINE（顶点/凸度/闭合完整保留），
+    # 这样采场/巷道多段线在 Section 中保持连续，不再断成短 LINE。
+    if not keep_hatch:   # R12 模式
+        n_conv = 0
+        for e in list(msp.query("LWPOLYLINE")):
+            try:
+                pts = [(p[0], p[1]) for p in e.get_points("xy")]
+                attrs = {"layer": e.dxf.layer, "color": e.dxf.get("color", 256),
+                         "linetype": e.dxf.get("linetype", "CONTINUOUS")}
+                pl = msp.add_polyline2d(pts, close=bool(e.closed), dxfattribs=attrs)
+                # 保留凸度(bulge)：圆弧段不能退化成直线
+                verts = list(pl.vertices)
+                for v, p in zip(verts, e.get_points("xyb")):
+                    if len(p) > 2 and p[2]:
+                        v.dxf.bulge = p[2]
+                msp.delete_entity(e)
+                n_conv += 1
+            except Exception:
+                pass
+        if n_conv:
+            print(f"  [R12] LWPOLYLINE->POLYLINE 转换 {n_conv} 条")
 
     doc.saveas(dst_path, encoding="gbk")
 
