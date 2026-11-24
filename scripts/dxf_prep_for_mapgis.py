@@ -350,6 +350,11 @@ def merge_overline_fractions(msp, tol_x=3.0, dy_min=1.0, dy_max=8.0):
                 continue
             if exclude_re.search(t.dxf.text):
                 continue
+            # 正负号一致性：口高程/孔深为正，不与负标高(如 -27.767)错配。
+            # 密集标注区按距离配对时，负数标高常在附近抢占配对。
+            base_clean = re.sub(r"%%[uUoO]", "", base.dxf.text).strip()
+            if base_clean.startswith("-") != ttxt.startswith("-"):
+                continue
             dx = t.dxf.insert[0] - bx
             dy = (t.dxf.insert[1] - by) * direction
             if abs(dx) > tol_x or not (dy_min < dy < dy_max):
