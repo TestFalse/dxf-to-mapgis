@@ -86,8 +86,8 @@ R2004 输出会保留源图的 `lineweight`（LINE 0.3/0.5mm、POINT 0.3mm 等�
 这是**预期行为、不清除**：用户选择在 R2004 版本保留源图线粗细（区文件需要 R2004，线宽随之保留）。若确实要细线，改用 R12 版本输出（点/线用），或手动清除线宽。勿默认 `dxf.discard("lineweight")`。
 
 ### 13. 采场/巷道"断线" + 罗马数字Ⅱ变ⅠⅠ
-- 断线：源图「采场/巷道」图层线型是 ACAD_ISO02W100/HIDDEN2（虚线），Section 映射成 MapGIS 虚线2 后间距变大、看着像断线。用户选「只改采场线」：`explicit_linetype` 中图层名含 `采场`/`巷道`（`SOLID_LAYER_KEYS`）的虚线改 `CONTINUOUS`，其余虚线（设计中心线、采矿权界等）保持 421302 不动。
-- 罗马数字：源 MTEXT 含 `\S0-Ⅱ-5-2-3/...`、`\SⅡ1-18/...`（Ⅱ=U+2161）。DXF 按 GBK 存正确，但 Section 把 Ⅱ 误渲染成两个 Ⅰ。用户选「转义写法」：`clean_format` 末尾把罗马数字 Ⅰ-Ⅻ 改写为 `\U+XXXX`（如 Ⅱ→`\U+2161`），Section 可正确识别。**注意**：`UNI_RE` 的解码在前面执行，转义放在末尾不会被再次解码。
+- 断线：源图「采场/巷道」图层线型是 ACAD_ISO02W100/HIDDEN2（虚线），Section 映射成 MapGIS 虚线2 后间距变大、看着像断线。修复需**两处都改**：① `explicit_linetype` 中图层名含 `采场`/`巷道`（`SOLID_LAYER_KEYS`）的**实体**虚线改 `CONTINUOUS`；② **图层定义** `doc.layers` 里同名单的 `linetype` 也要改 `CONTINUOUS`——只改实体无效，Section 会按图层线型渲染，仍显示断续短线。其余虚线（设计中心线、采矿权界等）保持 421302 不动。
+- 罗马数字：源 MTEXT 含 `\S0-Ⅱ-5-2-3/...`、`\SⅡ1-18/...`（Ⅱ=U+2161）。DXF 按 GBK 存正确，但 Section 把 Ⅱ 误渲染成两个 Ⅰ；试过 `\U+2161` 转义，Section 显示成**字面** `\U+2161`。最终方案：`clean_format` 末尾把罗马数字 Ⅰ-Ⅻ 改成 ASCII 大写字母（Ⅱ→`II`、Ⅲ→`III`…），任何转换器都能正确显示。
 
 ## 关键坑速查
 - 新文档必须 `doc.encoding='gbk'`（只设 header 的 `$DWGCODEPAGE` 无效），否则中文乱码。
