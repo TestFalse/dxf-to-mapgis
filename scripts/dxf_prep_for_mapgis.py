@@ -32,8 +32,10 @@ FRAC_RE = re.compile(r"/[^/]+/[^/]+/")
 UU_RE = re.compile(r"%%[uU]")   # 下划线（上排文字，配下方）
 OO_RE = re.compile(r"%%[oO]")   # 上划线（下排文字，配上方）——钻孔样品标注横线
 UNI_RE = re.compile(r"\\[uU]\+([0-9A-Fa-f]{4,6})")   # AutoCAD \U+XXXX Unicode 转义（中文）
-# 罗马数字：Section/MapGIS 把 GBK 编码的 Ⅱ 误渲染成两个 Ⅰ，改写成 \U+XXXX 转义
-ROMAN_MAP = {c: f"\\U+{ord(c):04X}" for c in "ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ"}
+# 罗马数字：Section 既把 GBK 的 Ⅱ 误渲染成两个 Ⅰ，也不认 \U+2161 转义（显示字面），
+# 统一改写成 ASCII 大写字母（Ⅱ→II），保证任何转换器都能正确显示。
+ROMAN_MAP = dict(zip("ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ",
+                     ["I","II","III","IV","V","VI","VII","VIII","IX","X","XI","XII"]))
 
 EXPLODE_TYPES = {
     "INSERT", "DIMENSION", "ARC_DIMENSION", "LWPOLYLINE", "POLYLINE",
@@ -60,9 +62,9 @@ def clean_format(text):
     s = re.sub(r"%%[dD]", "°", s)
     s = re.sub(r"%%[pP]", "±", s)
     # 注意：%%u/%%o 划线码不能在此删除，须留给 merge_overline_fractions 配对成 /上/下/
-    # 罗马数字 -> \U+XXXX 转义：Section 按 GBK 解码 Ⅱ 会拆成两个 Ⅰ，转义可正确识别
-    for ch, esc in ROMAN_MAP.items():
-        s = s.replace(ch, esc)
+    # 罗马数字 -> ASCII 字母：Section 不认 \U+ 转义（显示字面），改 II/III 最稳
+    for ch, asc in ROMAN_MAP.items():
+        s = s.replace(ch, asc)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -415,7 +417,15 @@ def explicit_linetype(msp, doc):
     layer_lt = {}
     for ly in doc.layers:
         try:
-            layer_lt[ly.dxf.name] = ly.dxf.get("linetype", "CONTINUOUS")
+            lname = ly.dxf.name
+            lt = ly.dxf.get("linetype", "CONTINUOUS")
+            layer_lt[lname] = lt
+            # 采场/巷道图层：Section 会按「图层线型」渲染（不只实体线型），
+            # 图层仍是虚线名则实体改成 CONTINUOUS 也会显示成断续短线 → 同步改图层定义。
+            if any(k in lname for k in SOLID_LAYER_KEYS) and str(lt).upper() not in (
+                    "CONTINUOUS", "BYLAYER", "BYBLOCK", ""):
+                ly.dxf.linetype = "CONTINUOUS"
+                layer_lt[lname] = "CONTINUOUS"
         except Exception:
             pass
 
@@ -527,6 +537,8 @@ def main():
     ap.add_argument("--dxf-version", default="R12", choices=["R12", "R2004"],
                     help="输出版本：R12(AC1009，默认，线/点转换最佳) 或 R2004(AC1018，保留 HATCH 供生成区文件)")
     ap.add_argument("--dash-name", default="421302", help="虚线改名用的线型名")
+    ap.add_argument("--both", action="store_true",
+                    help="一次生成 R12 和 R2004 两版（输出到 <out> 和 <out>_R2004）")
     args = ap.parse_args()
     SRC_DIR = os.path.abspath(args.src)
     OUT_DIR = os.path.abspath(args.out or os.path.join(SRC_DIR, "MapGIS转换用"))
@@ -535,19 +547,23 @@ def main():
     version = args.dxf_version
     keep_hatch = (version == "R2004")
 
-    os.makedirs(OUT_DIR, exist_ok=True)
-    files = sorted(f for f in os.listdir(SRC_DIR)
-                   if f.lower().endswith(".dxf") and
-                   os.path.abspath(os.path.join(SRC_DIR, f)) != OUT_DIR)
+    # --both: run two passes (R12 + R2004) into <out> and <out>_R2004
+    versions = [("R12", OUT_DIR, False), ("R2004", OUT_DIR + "_R2004", True)] \
+        if args.both else [(version, OUT_DIR, keep_hatch)]
+
     report = []
-    for f in files:
-        try:
-            report.append((f,) + process_file(os.path.join(SRC_DIR, f),
-                                              os.path.join(OUT_DIR, f),
-                                              version=version,
-                                              keep_hatch=keep_hatch) + ("OK",))
-        except Exception as ex:
-            report.append((f, 0, 0, {}, 0, 0, 0, 0, "ERR:" + repr(ex)))
+    for ver, out_dir, kh in versions:
+        os.makedirs(out_dir, exist_ok=True)
+        files = sorted(f for f in os.listdir(SRC_DIR)
+                       if f.lower().endswith(".dxf") and
+                       os.path.abspath(os.path.join(SRC_DIR, f)) != out_dir)
+        for f in files:
+            try:
+                report.append((f"[{ver}] {f}",) + process_file(
+                    os.path.join(SRC_DIR, f), os.path.join(out_dir, f),
+                    version=ver, keep_hatch=kh) + ("OK",))
+            except Exception as ex:
+                report.append((f"[{ver}] {f}", 0, 0, {}, 0, 0, 0, 0, "ERR:" + repr(ex)))
     print("文件 | 原始→输出 | 分式 | 文本行 | 划线合并 | layer0 | 结果")
     for r in report:
         f, a, b, cnt, frac, ntext, nuu, l0, st = r
